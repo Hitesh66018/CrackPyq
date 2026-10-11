@@ -23,10 +23,12 @@ const EXAM_PRESETS: Record<string, { name: string; totalQuestions: number; batch
   gate: {
     name: "GATE (65 Qs)",
     totalQuestions: 65,
-    batchSize: 30,
+    batchSize: 15,
     defaultRanges: [
-      { start: 1, end: 30, label: "Q1 to Q30 (~15s)" },
-      { start: 31, end: 65, label: "Q31 to Q65 (~18s)" }
+      { start: 1, end: 15, label: "Q1 to Q15 (~8s)" },
+      { start: 16, end: 30, label: "Q16 to Q30 (~8s)" },
+      { start: 31, end: 45, label: "Q31 to Q45 (~8s)" },
+      { start: 46, end: 65, label: "Q46 to Q65 (~10s)" }
     ]
   },
   jee: {
@@ -56,7 +58,7 @@ function ImportPdfPageInner() {
 
   const [selectedPreset, setSelectedPreset] = useState<string>("gate");
   const [startQ, setStartQ] = useState<number>(1);
-  const [endQ, setEndQ] = useState<number>(30);
+  const [endQ, setEndQ] = useState<number>(15);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentProgress, setCurrentProgress] = useState<string>("");
