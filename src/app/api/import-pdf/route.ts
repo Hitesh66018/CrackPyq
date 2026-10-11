@@ -156,6 +156,8 @@ IMPORTANT RULES:
         throw new Error("No questions were detected in the provided PDF.");
       }
 
+      await client.query("BEGIN");
+
       for (let idx = 0; idx < questionsArray.length; idx++) {
         const q = questionsArray[idx];
         const qText = q.question_text || "";
@@ -233,6 +235,7 @@ IMPORTANT RULES:
       // Update jobs and papers
       await client.query("UPDATE source_papers SET status = 'IMPORTED', total_questions = $1 WHERE id = $2", [successCount, sourcePaperId]);
       await client.query("UPDATE import_jobs SET status = 'COMPLETED', total_questions_processed = $1, completed_at = now() WHERE id = $2", [successCount, jobId]);
+      await client.query("COMMIT");
       
     } catch (err: any) {
       await client.query("UPDATE source_papers SET status = 'FAILED' WHERE id = $1", [sourcePaperId]);
