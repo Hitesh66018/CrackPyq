@@ -39,8 +39,15 @@ function ImportPdfPageInner() {
         body: formData
       });
       
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload failed");
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error(text.length > 200 ? `Server returned an error (${res.status} ${res.statusText})` : text);
+      }
+      
+      if (!res.ok) throw new Error(data.error || `Upload failed with status ${res.status}`);
       
       setResult({ message: data.message });
       setPaperFile(null);

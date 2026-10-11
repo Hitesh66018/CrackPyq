@@ -17,9 +17,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No Question Paper PDF provided." }, { status: 400 });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
       return NextResponse.json({ 
-        error: "Server configuration missing: GEMINI_API_KEY is not set in .env.local" 
+        error: "Server configuration missing: GEMINI_API_KEY is not set in environment variables" 
       }, { status: 500 });
     }
 
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest) {
     const { data: topicsData } = await supabase.from("topics").select("id, name, subject:subjects(name)");
     const topicsList = topicsData?.map((t: any) => `ID ${t.id}: ${t.subject?.name} - ${t.name}`).join("\n") || "1: General";
 
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const ai = new GoogleGenAI({ apiKey });
 
     // Construct the structured output schema for the model to guarantee valid JSON
     const responseSchema = {
@@ -149,7 +150,7 @@ export async function POST(request: NextRequest) {
 
         try {
           const response = await ai.models.generateContent({
-            model: "gemini-3.8-flash",
+            model: "gemini-2.5-flash",
             contents: [{ role: "user", parts: parts }],
             config: {
               responseMimeType: "application/json",
@@ -160,8 +161,8 @@ export async function POST(request: NextRequest) {
           if (outputText) {
             questionsArray.push(...JSON.parse(outputText));
           }
-        } catch (e) {
-          console.error(`Batch ${range.start}-${range.end} failed:`, e);
+        } catch (e: any) {
+          console.error(`Batch ${range.start}-${range.end} failed:`, e?.message || e);
         }
         
         await new Promise(res => setTimeout(res, 2000));
