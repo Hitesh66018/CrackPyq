@@ -148,6 +148,11 @@ IMPORTANT RULES:
 
       await client.query("BEGIN");
 
+      // Fetch all valid topic IDs from database
+      const validTopicsRes = await client.query("SELECT id FROM topics");
+      const validTopicIds = new Set(validTopicsRes.rows.map((r: any) => r.id));
+      const fallbackTopicId = validTopicsRes.rows.length > 0 ? validTopicsRes.rows[0].id : null;
+
       for (let idx = 0; idx < questionsArray.length; idx++) {
         const q = questionsArray[idx];
         const qText = q.question_text || "";
@@ -164,13 +169,17 @@ IMPORTANT RULES:
         } else {
           const qType = q.question_type === 'MSQ' ? 'MSQ' : (q.question_type === 'NAT' ? 'NAT' : 'MCQ');
           
+          // Ensure topic_id is valid to prevent foreign key errors
+          const parsedTopic = parseInt(q.topic_id) || parseInt(topic_id);
+          const safeTopicId = validTopicIds.has(parsedTopic) ? parsedTopic : fallbackTopicId;
+
           const insertQQuery = `
             INSERT INTO questions (topic_id, question_text, detailed_solution, positive_marks, negative_marks, status, content_hash, question_type, nat_answer_min, nat_answer_max)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id
           `;
           const qRes = await client.query(insertQQuery, [
-            parseInt(q.topic_id) || parseInt(topic_id) || 1,
+            safeTopicId,
             qText,
             q.detailed_solution || "",
             parseFloat(q.positive_marks) || 1,
