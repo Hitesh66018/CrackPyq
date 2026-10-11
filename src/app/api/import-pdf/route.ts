@@ -131,12 +131,31 @@ IMPORTANT RULES:
       }
       parts.push({ text: prompt });
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: [{ role: "user", parts: parts }]
-      });
+      let outputText = "";
+      const modelsToTry = ["gemini-3.5-flash", "gemini-3.8-flash"];
+      let lastAiError: any = null;
 
-      const outputText = response.text || "";
+      for (const modelName of modelsToTry) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: [{ role: "user", parts: parts }]
+          });
+          if (response.text) {
+            outputText = response.text;
+            break;
+          }
+        } catch (mErr: any) {
+          lastAiError = mErr;
+          console.warn(`Model ${modelName} failed or busy, trying alternative...`);
+          // Wait 1 second before fallback
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+
+      if (!outputText && lastAiError) {
+        throw lastAiError;
+      }
       let questionsArray: any[] = [];
       
       try {
