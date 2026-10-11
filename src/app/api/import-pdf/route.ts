@@ -5,6 +5,27 @@ import { db } from '@/utils/db';
 
 export const maxDuration = 60; // Next.js serverless function max duration
 
+// Helper to clean and parse JSON from AI response
+function extractJsonArray(rawText: string): any[] {
+  let cleaned = rawText.trim();
+  // Strip markdown code fences if present
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
+  }
+  
+  // Find array bounds
+  const startIdx = cleaned.indexOf('[');
+  const endIdx = cleaned.lastIndexOf(']');
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    cleaned = cleaned.slice(startIdx, endIdx + 1);
+  }
+
+  const parsed = JSON.parse(cleaned);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -41,45 +62,6 @@ export async function POST(request: NextRequest) {
 
     const ai = new GoogleGenAI({ apiKey });
 
-    // Construct the structured output schema for the model to guarantee valid JSON
-    const responseSchema = {
-      type: "ARRAY",
-      description: "List of extracted questions.",
-      items: {
-        type: "OBJECT",
-        properties: {
-          topic_id: {
-            type: "NUMBER",
-            description: `The ID of the most relevant topic from this list based on the question content:\n${topicsList}`
-          },
-          question_type: {
-            type: "STRING",
-            description: "Must be 'MCQ' (single correct option), 'MSQ' (multiple correct options), or 'NAT' (numerical answer)."
-          },
-          question_text: {
-            type: "STRING",
-            description: "The main question text. If it contains math, output standard LaTeX wrapped in $$...$$."
-          },
-          option_a: { type: "STRING", description: "Option A text. Leave empty if NAT." },
-          option_b: { type: "STRING", description: "Option B text. Leave empty if NAT." },
-          option_c: { type: "STRING", description: "Option C text. Leave empty if NAT." },
-          option_d: { type: "STRING", description: "Option D text. Leave empty if NAT." },
-          correct_answer: {
-            type: "STRING",
-            description: "For MCQ: 'A', 'B', 'C', or 'D'. For MSQ: Comma separated like 'A,C'. For NAT: Leave empty."
-          },
-          nat_answer_min: { type: "NUMBER", description: "For NAT: The minimum accepted numerical value. Leave null if MCQ/MSQ." },
-          nat_answer_max: { type: "NUMBER", description: "For NAT: The maximum accepted numerical value. Leave null if MCQ/MSQ." },
-          positive_marks: { type: "NUMBER", description: "Positive marks for correct answer, usually 1 or 2." },
-          negative_marks: { type: "NUMBER", description: "Negative marks for incorrect answer, usually 0.33 or 0.66. (NAT is usually 0)." },
-          detailed_solution: { type: "STRING", description: "Step-by-step solution if available in the text." }
-        },
-        required: ["topic_id", "question_type", "question_text"]
-      }
-    };
-
-    const pool = db;
-
     const client = await db.pool.connect();
     
     // 1. Create a Source Paper record
@@ -104,73 +86,82 @@ export async function POST(request: NextRequest) {
     const crypto = require('crypto');
 
     try {
-      // Process batches...
-      const batchRanges = [
-        { start: 1, end: 15 },
-        { start: 16, end: 30 },
-        { start: 31, end: 45 },
-        { start: 46, end: 60 },
-        { start: 61, end: 75 }
-      ];
+      // High-capacity prompt handling up to 200 questions in one seamless pass
+      let prompt = `
+You are an expert competitive exam question digitization engine.
+Read the attached Question Paper PDF carefully.
 
-      const questionsArray: any[] = [];
+Extract ALL questions present in this paper (supporting up to 200 questions: Q1, Q2, Q3, ... through the end of the document).
+`;
 
-      for (const range of batchRanges) {
-        let prompt = `
-          You are an expert educational data extraction engine.
-          Read the attached PDF of a competitive examination paper.
-        `;
-
-        if (keyBase64) {
-          prompt += `
-          I have ALSO attached a second PDF which is the official Answer Key.
-          CRITICAL: Cross-reference the question numbers from the Paper with the correct options from the Answer Key PDF to accurately map the 'correct_answer'.
-          `;
-        }
-
+      if (keyBase64) {
         prompt += `
-          Extract ONLY questions numbered from ${range.start} to ${range.end} into the structured JSON array.
-          Skip any questions outside this range.
-          
-          CRITICAL INSTRUCTIONS TO PREVENT JSON TRUNCATION:
-          1. Analyze the question to determine 'question_type' ('MCQ', 'MSQ', or 'NAT').
-          2. For 'detailed_solution', write a VERY CONCISE (1-2 sentences max) explanation of why the answer is correct. Do not write massive paragraphs.
-          3. Convert mathematical formulas to standard LaTeX formatting wrapped in $ or $$.
-          4. For MCQ: correct_answer is one of "A", "B", "C", "D".
-          5. For MSQ: correct_answer is comma separated, e.g. "A,B,D".
-          6. For NAT (Numerical): leave correct_answer and options empty, but fill in 'nat_answer_min' and 'nat_answer_max'.
-        `;
-
-        const parts: any[] = [];
-        parts.push({ inlineData: { data: paperBase64, mimeType: "application/pdf" } });
-        if (keyBase64) {
-          parts.push({ inlineData: { data: keyBase64, mimeType: "application/pdf" } });
-        }
-        parts.push({ text: prompt });
-
-        try {
-          const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: [{ role: "user", parts: parts }],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: responseSchema,
-            }
-          });
-          const outputText = response.text;
-          if (outputText) {
-            questionsArray.push(...JSON.parse(outputText));
-          }
-        } catch (e: any) {
-          console.error(`Batch ${range.start}-${range.end} failed:`, e?.message || e);
-        }
-        
-        await new Promise(res => setTimeout(res, 2000));
+I have ALSO attached the official Answer Key PDF.
+CRITICAL: Match every question number in the question paper with its corresponding answer in the answer key to accurately set 'correct_answer'.
+`;
       }
 
-      for (const q of questionsArray) {
-        // Hash for deduplication
+      prompt += `
+Return a JSON array of objects with the following schema:
+[
+  {
+    "question_number": "Q1",
+    "question_type": "MCQ" | "MSQ" | "NAT",
+    "question_text": "The full question text with mathematical formulas formatted in LaTeX like $x^2$ or $$\\frac{a}{b}$$",
+    "option_a": "Option A text (leave empty if NAT)",
+    "option_b": "Option B text (leave empty if NAT)",
+    "option_c": "Option C text (leave empty if NAT)",
+    "option_d": "Option D text (leave empty if NAT)",
+    "correct_answer": "A" or "B,C" for MSQ (leave empty if NAT)",
+    "nat_answer_min": null or minimum accepted numerical value if NAT,
+    "nat_answer_max": null or maximum accepted numerical value if NAT,
+    "positive_marks": 1 or 2,
+    "negative_marks": 0.33 or 0.66 (0 for NAT),
+    "detailed_solution": "Short 1-sentence solution explanation"
+  }
+]
+
+IMPORTANT RULES:
+1. Extract ALL questions from the document without skipping any.
+2. For NAT (Numerical Answer Type) questions: set question_type to 'NAT', leave options empty, and provide nat_answer_min and nat_answer_max numbers.
+3. For MSQ (Multiple Select Questions): set question_type to 'MSQ' and correct_answer like 'A,C'.
+4. For MCQ (Single Choice): set question_type to 'MCQ' and correct_answer to 'A', 'B', 'C', or 'D'.
+5. Respond ONLY with the valid JSON array. Do not include markdown preamble.
+`;
+
+      const parts: any[] = [];
+      parts.push({ inlineData: { data: paperBase64, mimeType: "application/pdf" } });
+      if (keyBase64) {
+        parts.push({ inlineData: { data: keyBase64, mimeType: "application/pdf" } });
+      }
+      parts.push({ text: prompt });
+
+      // Use gemini-3.5-flash for speed, 1M context token support, and high accuracy
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [{ role: "user", parts: parts }]
+      });
+
+      const outputText = response.text || "";
+      let questionsArray: any[] = [];
+      
+      try {
+        questionsArray = extractJsonArray(outputText);
+      } catch (parseErr) {
+        console.error("JSON parse failed, raw output sample:", outputText.slice(0, 500));
+        throw new Error("AI did not return valid JSON. Please try uploading the PDF again.");
+      }
+
+      if (questionsArray.length === 0) {
+        throw new Error("No questions were detected in the provided PDF.");
+      }
+
+      for (let idx = 0; idx < questionsArray.length; idx++) {
+        const q = questionsArray[idx];
         const qText = q.question_text || "";
+        if (!qText.trim()) continue;
+
+        // Hash for deduplication
         const hash = crypto.createHash('sha256').update(qText.toLowerCase().trim()).digest('hex');
         
         // Check if question exists
@@ -178,10 +169,8 @@ export async function POST(request: NextRequest) {
         let newQId;
         
         if (checkQ.rows.length > 0) {
-          // Exact duplicate found, use existing question!
           newQId = checkQ.rows[0].id;
         } else {
-          // Insert new question
           const qType = q.question_type === 'MSQ' ? 'MSQ' : (q.question_type === 'NAT' ? 'NAT' : 'MCQ');
           
           const insertQQuery = `
@@ -206,7 +195,7 @@ export async function POST(request: NextRequest) {
 
           // Insert options if MCQ or MSQ
           if (qType === 'MCQ' || qType === 'MSQ') {
-            const correctStr = (q.correct_answer || 'A').toUpperCase();
+            const correctStr = String(q.correct_answer || 'A').toUpperCase();
             const isCorrectA = correctStr.includes('A');
             const isCorrectB = correctStr.includes('B');
             const isCorrectC = correctStr.includes('C');
@@ -231,11 +220,12 @@ export async function POST(request: NextRequest) {
         }
         
         // Link to Source Paper
+        const qNumLabel = q.question_number || `Q${idx + 1}`;
         await client.query(`
           INSERT INTO paper_questions (source_paper_id, question_id, question_number, marks, negative_marks)
           VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (source_paper_id, question_id) DO NOTHING
-        `, [sourcePaperId, newQId, "Q" + (successCount + 1), parseFloat(q.positive_marks) || 1, parseFloat(q.negative_marks) || 0.33]);
+        `, [sourcePaperId, newQId, qNumLabel, parseFloat(q.positive_marks) || 1, parseFloat(q.negative_marks) || 0.33]);
 
         successCount++;
       }
@@ -258,31 +248,6 @@ export async function POST(request: NextRequest) {
 
   } catch (error: any) {
     console.error("PDF AI extraction failed:", error);
-    
-    // MOCK FALLBACK: If Gemini API is down, simulate success for UI testing
-    if (error?.message?.includes("503") || error?.status === 503 || error?.message?.includes("Quota")) {
-       console.log("Injecting mock data because Gemini is down...");
-       
-       const pool = db;
-       const client = await db.pool.connect();
-       try {
-         const res = await client.query(`
-            INSERT INTO questions (topic_id, question_text, positive_marks, negative_marks, status)
-            VALUES (1, 'What is the time complexity of binary search? (Auto-Mocked due to AI outage)', 2, 0.66, 'PENDING_REVIEW')
-            RETURNING id
-         `);
-         const id = res.rows[0].id;
-         await client.query(`
-            INSERT INTO options (question_id, option_text, is_correct) VALUES 
-            ($1, 'O(1)', false), ($1, 'O(n)', false), ($1, 'O(log n)', true), ($1, 'O(n^2)', false)
-         `, [id]);
-       } finally {
-         client.release();
-       }
-       
-       return NextResponse.json({ message: "Google API is currently down (503). Inserted 1 Mock Question instead so you can see the flow!" });
-    }
-
     return NextResponse.json({ error: error.message || "Failed to process PDF." }, { status: 500 });
   }
 }
