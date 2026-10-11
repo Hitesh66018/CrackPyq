@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/utils/db";
 
-export const dynamic = 'force-dynamic';
-
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -58,17 +56,26 @@ export async function GET(request: NextRequest) {
 
       // Exam papers (e.g. 2024, 2023, 2013...)
       const papersRes = await pool.query(
-        `SELECT ep.id, ep.paper_year, ep.paper_name, ep.paper_code, ep.total_questions, ep.status
+        `SELECT ep.id, ep.year, ep.session_name, ep.code, ep.total_marks
          FROM exam_papers ep
          WHERE ep.exam_id = $1
-         ORDER BY ep.paper_year DESC, ep.paper_name ASC`,
+         ORDER BY ep.year DESC, ep.session_name ASC`,
         [examId]
       );
+
+      const formattedPapers = papersRes.rows.map(p => ({
+        id: p.id,
+        year: p.year,
+        paper_year: p.year,
+        paper_name: p.session_name || `Paper ${p.year}`,
+        paper_code: p.code || `PAPER_${p.year}`,
+        total_marks: p.total_marks
+      }));
 
       return NextResponse.json({
         exam,
         subjects: Object.values(subjectsMap),
-        papers: papersRes.rows
+        papers: formattedPapers
       });
     }
 

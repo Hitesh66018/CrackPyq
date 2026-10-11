@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { 
   UploadCloud, FileText, ArrowLeft, CheckCircle2, AlertCircle, 
-  Sparkles, Key, Loader2, Layers, BookOpen, Calendar, HelpCircle 
+  Sparkles, Key, Loader2, Layers, BookOpen, Calendar, HelpCircle,
+  Check, Info, Tag
 } from "lucide-react";
 
 interface ExamItem {
@@ -21,11 +22,11 @@ interface ExamItem {
 
 interface PaperItem {
   id: number;
+  year: number;
   paper_year: number;
   paper_name: string;
   paper_code: string;
-  total_questions: number;
-  status: string;
+  total_marks: string;
 }
 
 interface SubjectItem {
@@ -46,6 +47,11 @@ function ImportPdfPageInner() {
   const [papers, setPapers] = useState<PaperItem[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [selectedPaperId, setSelectedPaperId] = useState<string>("custom");
+
+  // Metadata Fields
+  const [year, setYear] = useState<number>(2013);
+  const [orsCode, setOrsCode] = useState<string>("A");
+  const [inferredNotice, setInferredNotice] = useState<string | null>(null);
 
   // File Upload State
   const [paperFile, setPaperFile] = useState<File | null>(null);
@@ -123,6 +129,63 @@ function ImportPdfPageInner() {
     fetchExamDetails();
   }, [selectedExamId]);
 
+  // 3. Filename inference logic
+  const handlePaperFileChange = (file: File | null) => {
+    setPaperFile(file);
+    if (!file) {
+      setInferredNotice(null);
+      return;
+    }
+
+    const filename = file.name.toUpperCase();
+    let detectedExamId: number | null = null;
+    let detectedYear: number | null = null;
+    let detectedOrs = "A";
+
+    // Invert year
+    const yearMatch = filename.match(/(20\d\d|19\d\d)/);
+    if (yearMatch) {
+      detectedYear = parseInt(yearMatch[1]);
+      setYear(detectedYear);
+    }
+
+    // Invert exam
+    if (filename.includes("GATE") && (filename.includes("CS") || filename.includes("CSE") || filename.includes("IT"))) {
+      const gateCs = exams.find((e) => e.code === "GATE_CS");
+      if (gateCs) detectedExamId = gateCs.id;
+    } else if (filename.includes("NEET")) {
+      const neet = exams.find((e) => e.code === "NEET_UG");
+      if (neet) detectedExamId = neet.id;
+    } else if (filename.includes("JEE")) {
+      const jee = exams.find((e) => e.code === "JEE_MAIN");
+      if (jee) detectedExamId = jee.id;
+    }
+
+    // Invert ORS / Booklet code (e.g. GATE2013(1) -> Code A)
+    if (filename.includes("(1)") || filename.includes("CODE A") || filename.includes("CS-A") || filename.includes("SET A")) {
+      detectedOrs = "A";
+      setOrsCode("A");
+    } else if (filename.includes("(2)") || filename.includes("CODE B") || filename.includes("CS-B") || filename.includes("SET B")) {
+      detectedOrs = "B";
+      setOrsCode("B");
+    } else if (filename.includes("(3)") || filename.includes("CODE C") || filename.includes("CS-C") || filename.includes("SET C")) {
+      detectedOrs = "C";
+      setOrsCode("C");
+    } else if (filename.includes("(4)") || filename.includes("CODE D") || filename.includes("CS-D") || filename.includes("SET D")) {
+      detectedOrs = "D";
+      setOrsCode("D");
+    }
+
+    if (detectedExamId) {
+      setSelectedExamId(detectedExamId);
+      const ex = exams.find((e) => e.id === detectedExamId);
+      if (ex) setSelectedExam(ex);
+      setInferredNotice(`Inferred from filename: ${ex?.name || 'GATE CS'} · ${detectedYear || 2013} · Booklet Code ${detectedOrs}`);
+    } else if (detectedYear) {
+      setInferredNotice(`Inferred Year: ${detectedYear} · Please confirm Exam below`);
+    }
+  };
+
   const handleExamChange = (examIdStr: string) => {
     const id = parseInt(examIdStr);
     setSelectedExamId(id);
@@ -141,15 +204,17 @@ function ImportPdfPageInner() {
 
     setIsProcessing(true);
     setResult(null);
-    setCurrentProgress(`Extracting Q${sQ} to Q${eQ} into ${selectedExam?.name || 'Selected Exam'}...`);
+    setCurrentProgress(`Extracting Q${sQ} to Q${eQ} for ${selectedExam?.name || 'Selected Exam'} (${year}, Code ${orsCode})...`);
 
     try {
       const formData = new FormData();
       formData.append("paperFile", paperFile);
       if (keyFile) formData.append("keyFile", keyFile);
       
-      // Strict taxonomy enforcement
+      // Strict metadata enforcement - NEVER DEFAULTING TO JEE MAIN
       formData.append("exam_id", selectedExamId.toString());
+      formData.append("year", year.toString());
+      formData.append("ors_code", orsCode);
       if (selectedPaperId !== "custom") {
         formData.append("exam_paper_id", selectedPaperId);
       }
@@ -178,7 +243,7 @@ function ImportPdfPageInner() {
       setTotalExtracted((prev) => prev + count);
 
       setResult({
-        message: `Success! Extracted ${count} questions (Q${sQ}–Q${eQ}) into Review Queue for ${data.exam_name || selectedExam?.name}. Total for this paper: ${totalExtracted + count}.`
+        message: `Success! Extracted ${count} questions (Q${sQ}–Q${eQ}) into Review Queue for ${data.exam_name || selectedExam?.name} (${year}, Code ${orsCode}). Total for paper: ${totalExtracted + count}.`
       });
 
       // Automatically advance range to next batch
@@ -201,10 +266,11 @@ function ImportPdfPageInner() {
     const code = (selectedExam?.code || "").toUpperCase();
     if (code.includes("GATE")) {
       return [
-        { start: 1, end: 15, label: "Q1 to Q15 (Section A)" },
-        { start: 16, end: 30, label: "Q16 to Q30" },
-        { start: 31, end: 45, label: "Q31 to Q45" },
-        { start: 46, end: 65, label: "Q46 to Q65 (Final)" }
+        { start: 1, end: 15, label: "Q1 to Q15 (1 Mark)" },
+        { start: 16, end: 25, label: "Q16 to Q25 (1 Mark)" },
+        { start: 26, end: 40, label: "Q26 to Q40 (2 Marks)" },
+        { start: 41, end: 55, label: "Q41 to Q55 (2 Marks & Linked)" },
+        { start: 56, end: 65, label: "Q56 to Q65 (General Aptitude)" }
       ];
     } else if (code.includes("NEET")) {
       return [
@@ -240,7 +306,7 @@ function ImportPdfPageInner() {
           <h2 className="text-2xl font-bold text-white flex items-center gap-2">
             <Sparkles className="text-purple-400" /> Universal Exam Ingestion Pipeline
           </h2>
-          <p className="text-gray-400">Strict taxonomy classification & high-throughput question ingestion.</p>
+          <p className="text-gray-400">Accurate metadata propagation, strict syllabus classification, & ORS answer key matching.</p>
         </div>
       </div>
 
@@ -261,77 +327,18 @@ function ImportPdfPageInner() {
           </div>
         )}
 
-        {/* 1. Exam & Paper Taxonomy Selector */}
-        <div className="bg-[#111624] p-6 rounded-2xl border border-white/10 text-white space-y-5">
-          <div className="flex justify-between items-center border-b border-white/10 pb-3">
-            <h4 className="text-sm font-bold text-purple-400 uppercase tracking-wider flex items-center gap-2">
-              <Layers size={16} /> 1. Select Target Exam & Taxonomy
-            </h4>
-            {selectedExam && (
-              <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                {selectedExam.syllabus_version} Syllabus
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Target Exam Dropdown */}
-            <div>
-              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
-                Target Exam
-              </label>
-              <select
-                value={selectedExamId || ""}
-                onChange={(e) => handleExamChange(e.target.value)}
-                className="w-full bg-[#0B0F19] border border-white/20 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
-              >
-                {exams.map((ex) => (
-                  <option key={ex.id} value={ex.id}>
-                    {ex.name} ({ex.code}) — {ex.status === 'READY_FOR_IMPORT' ? 'Ready' : ex.status}
-                  </option>
-                ))}
-              </select>
+        {/* Inferred Notice Banner */}
+        {inferredNotice && (
+          <div className="bg-blue-950/40 border border-blue-500/30 text-blue-300 p-3.5 rounded-xl flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <Info size={16} className="text-blue-400 flex-shrink-0" />
+              <span>{inferredNotice}</span>
             </div>
-
-            {/* Target Paper Dropdown */}
-            <div>
-              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
-                Exam Paper / Year
-              </label>
-              <select
-                value={selectedPaperId}
-                onChange={(e) => setSelectedPaperId(e.target.value)}
-                className="w-full bg-[#0B0F19] border border-white/20 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
-              >
-                <option value="custom">-- Custom Uploaded PDF Paper --</option>
-                {papers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.paper_name} ({p.paper_year})
-                  </option>
-                ))}
-              </select>
-            </div>
+            <span className="bg-blue-500/20 px-2 py-0.5 rounded text-blue-200 font-medium">Auto-Suggested</span>
           </div>
+        )}
 
-          {/* Active Taxonomy Preview Pill */}
-          <div className="text-xs text-gray-400 bg-black/30 p-3 rounded-lg border border-white/5 flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-gray-300">Active Syllabus Subjects:</span>
-            {subjects.length > 0 ? (
-              subjects.slice(0, 6).map((s) => (
-                <span key={s.id} className="bg-white/5 px-2 py-0.5 rounded text-gray-300 border border-white/5">
-                  {s.name}
-                </span>
-              ))
-            ) : (
-              <span className="italic text-gray-500">Loading syllabus subjects...</span>
-            )}
-            {subjects.length > 6 && (
-              <span className="text-purple-400 font-semibold">+{subjects.length - 6} more</span>
-            )}
-          </div>
-        </div>
-
-        {/* 2. File Uploads */}
+        {/* 1. PDF File Uploads */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Question Paper Upload */}
           <div className="border-2 border-dashed border-gray-700 rounded-xl p-8 text-center bg-gray-950 hover:bg-gray-900 transition-colors">
@@ -340,16 +347,16 @@ function ImportPdfPageInner() {
                 <FileText className="text-blue-400 mb-2" size={32} />
                 <h3 className="font-bold text-white truncate w-full px-4">{paperFile.name}</h3>
                 <span className="text-xs text-gray-400 mt-1">{(paperFile.size / (1024 * 1024)).toFixed(2)} MB</span>
-                <button onClick={() => setPaperFile(null)} className="text-sm text-red-400 mt-2 hover:underline">Remove</button>
+                <button onClick={() => handlePaperFileChange(null)} className="text-sm text-red-400 mt-2 hover:underline">Remove</button>
               </div>
             ) : (
               <>
                 <FileText className="text-gray-500 mx-auto mb-2" size={32} />
-                <h3 className="font-bold text-gray-200 mb-1">2. Question Paper PDF</h3>
-                <p className="text-xs text-gray-400 mb-2">Upload official exam PDF</p>
+                <h3 className="font-bold text-gray-200 mb-1">1. Question Paper PDF</h3>
+                <p className="text-xs text-gray-400 mb-2">e.g. GATE2013(1).pdf</p>
                 <label className="text-sm text-blue-400 font-medium cursor-pointer hover:underline inline-block bg-blue-950/60 border border-blue-800/60 px-4 py-1.5 rounded-lg">
                   Browse File
-                  <input type="file" className="hidden" accept=".pdf" onChange={(e) => e.target.files && setPaperFile(e.target.files[0])} />
+                  <input type="file" className="hidden" accept=".pdf" onChange={(e) => e.target.files && handlePaperFileChange(e.target.files[0])} />
                 </label>
               </>
             )}
@@ -367,8 +374,8 @@ function ImportPdfPageInner() {
             ) : (
               <>
                 <Key className="text-gray-500 mx-auto mb-2" size={32} />
-                <h3 className="font-bold text-gray-200 mb-1">3. Answer Key PDF (Optional)</h3>
-                <p className="text-xs text-gray-400 mb-2">For automatic key matching</p>
+                <h3 className="font-bold text-gray-200 mb-1">2. Answer Key PDF (Optional)</h3>
+                <p className="text-xs text-gray-400 mb-2">e.g. Key_CS_2013.pdf (ORS Columns A-D)</p>
                 <label className="text-sm text-purple-400 font-medium cursor-pointer hover:underline inline-block bg-purple-950/60 border border-purple-800/60 px-4 py-1.5 rounded-lg">
                   Browse File
                   <input type="file" className="hidden" accept=".pdf" onChange={(e) => e.target.files && setKeyFile(e.target.files[0])} />
@@ -378,7 +385,108 @@ function ImportPdfPageInner() {
           </div>
         </div>
 
-        {/* 3. Range & Batch Controller */}
+        {/* 2. Confirmed Exam & Paper Metadata Propagation */}
+        <div className="bg-[#111624] p-6 rounded-2xl border border-white/10 text-white space-y-5">
+          <div className="flex justify-between items-center border-b border-white/10 pb-3">
+            <h4 className="text-sm font-bold text-purple-400 uppercase tracking-wider flex items-center gap-2">
+              <Layers size={16} /> 2. Confirm Exam & Provenance Metadata
+            </h4>
+            <span className="text-xs text-gray-400">
+              Exam ID: <strong className="text-white font-mono">{selectedExamId || 'None'}</strong>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Target Exam Dropdown */}
+            <div className="lg:col-span-2">
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Target Exam <span className="text-red-400">*</span>
+              </label>
+              <select
+                value={selectedExamId || ""}
+                onChange={(e) => handleExamChange(e.target.value)}
+                className="w-full bg-[#0B0F19] border border-white/20 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
+              >
+                <option value="" disabled>-- Select Exam (Required) --</option>
+                {exams.map((ex) => (
+                  <option key={ex.id} value={ex.id}>
+                    {ex.name} ({ex.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Exam Year */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Exam Year <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="number"
+                min="1990"
+                max="2030"
+                value={year}
+                onChange={(e) => setYear(parseInt(e.target.value) || 2013)}
+                className="w-full bg-[#0B0F19] border border-white/20 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
+              />
+            </div>
+
+            {/* ORS / Booklet Code */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Booklet / ORS Code
+              </label>
+              <select
+                value={orsCode}
+                onChange={(e) => setOrsCode(e.target.value)}
+                className="w-full bg-[#0B0F19] border border-white/20 rounded-xl px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
+              >
+                <option value="A">Code A (Default for GATE2013(1))</option>
+                <option value="B">Code B</option>
+                <option value="C">Code C</option>
+                <option value="D">Code D</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Paper Session */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+              Historical Paper Definition (Optional)
+            </label>
+            <select
+              value={selectedPaperId}
+              onChange={(e) => setSelectedPaperId(e.target.value)}
+              className="w-full bg-[#0B0F19] border border-white/20 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
+            >
+              <option value="custom">-- Create / Link as New Master Paper --</option>
+              {papers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.paper_name} ({p.year}) — {p.paper_code}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Active Taxonomy Preview Pill */}
+          <div className="text-xs text-gray-400 bg-black/30 p-3 rounded-lg border border-white/5 flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-gray-300">Target Syllabus Subjects:</span>
+            {subjects.length > 0 ? (
+              subjects.slice(0, 6).map((s) => (
+                <span key={s.id} className="bg-white/5 px-2 py-0.5 rounded text-gray-300 border border-white/5">
+                  {s.name}
+                </span>
+              ))
+            ) : (
+              <span className="italic text-gray-500">Loading syllabus subjects...</span>
+            )}
+            {subjects.length > 6 && (
+              <span className="text-purple-400 font-semibold">+{subjects.length - 6} more</span>
+            )}
+          </div>
+        </div>
+
+        {/* 3. Batch Range Controller */}
         <div className="bg-[#111624] p-6 rounded-2xl border border-white/10 text-white space-y-5">
           <div className="flex justify-between items-center">
             <h4 className="text-sm font-bold text-purple-400 uppercase tracking-wider">
@@ -393,7 +501,7 @@ function ImportPdfPageInner() {
 
           {/* Quick Preset Buttons */}
           <div>
-            <label className="block text-xs font-semibold text-gray-400 mb-2">1-Click Batch Range Presets</label>
+            <label className="block text-xs font-semibold text-gray-400 mb-2">1-Click Batch Range Presets for {selectedExam?.name || 'Selected Exam'}</label>
             <div className="flex flex-wrap gap-2">
               {getBatchPresets().map((range, idx) => {
                 const isActive = startQ === range.start && endQ === range.end;
