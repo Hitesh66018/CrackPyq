@@ -1,3 +1,5 @@
+﻿export const instant = false;
+
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 import { BookOpen, ChevronRight, AlertCircle, Layout } from "lucide-react";

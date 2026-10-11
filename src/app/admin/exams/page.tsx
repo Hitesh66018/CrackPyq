@@ -1,4 +1,7 @@
+﻿export const instant = false;
+
 import { supabase } from "@/lib/supabase";
+import Link from "next/link";
 import { Plus, Folder, Layout, BookOpen } from "lucide-react";
 
 export default async function ExamsCMSPage() {
@@ -37,7 +40,7 @@ export default async function ExamsCMSPage() {
                   </span>
                 </div>
               </div>
-              <button className="text-sm font-medium text-blue-600 hover:underline">Edit Exam</button>
+              <Link href={`/admin/exams/${exam.id}/edit`} className="text-sm font-medium text-blue-600 hover:underline">Edit Exam</Link>
             </div>
 
             {/* Subjects & Topics */}
