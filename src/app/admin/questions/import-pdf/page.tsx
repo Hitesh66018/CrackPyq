@@ -4,7 +4,48 @@ import { Suspense } from "react";
 import { useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { UploadCloud, FileText, ArrowLeft, CheckCircle2, AlertCircle, Sparkles, Key } from "lucide-react";
+import { UploadCloud, FileText, ArrowLeft, CheckCircle2, AlertCircle, Sparkles, Key, Loader2, Play } from "lucide-react";
+
+const EXAM_PRESETS: Record<string, { name: string; totalQuestions: number; batchSize: number; defaultRanges: { start: number; end: number; label: string }[] }> = {
+  neet: {
+    name: "NEET UG (180–200 Qs)",
+    totalQuestions: 200,
+    batchSize: 30,
+    defaultRanges: [
+      { start: 1, end: 30, label: "Q1 to Q30 (Physics Sec A)" },
+      { start: 31, end: 50, label: "Q31 to Q50 (Physics Sec B)" },
+      { start: 51, end: 85, label: "Q51 to Q85 (Chemistry)" },
+      { start: 86, end: 100, label: "Q86 to Q100 (Chemistry B)" },
+      { start: 101, end: 150, label: "Q101 to Q150 (Botany)" },
+      { start: 151, end: 200, label: "Q151 to Q200 (Zoology)" },
+    ]
+  },
+  gate: {
+    name: "GATE (65 Qs)",
+    totalQuestions: 65,
+    batchSize: 30,
+    defaultRanges: [
+      { start: 1, end: 30, label: "Q1 to Q30 (~15s)" },
+      { start: 31, end: 65, label: "Q31 to Q65 (~18s)" }
+    ]
+  },
+  jee: {
+    name: "JEE Main / Advanced (75–90 Qs)",
+    totalQuestions: 90,
+    batchSize: 30,
+    defaultRanges: [
+      { start: 1, end: 30, label: "Q1 to Q30 (Physics)" },
+      { start: 31, end: 60, label: "Q31 to Q60 (Chemistry)" },
+      { start: 61, end: 90, label: "Q61 to Q90 (Maths)" }
+    ]
+  },
+  custom: {
+    name: "Custom Range (Any Exam)",
+    totalQuestions: 200,
+    batchSize: 30,
+    defaultRanges: []
+  }
+};
 
 function ImportPdfPageInner() {
   const searchParams = useSearchParams();
@@ -12,35 +53,48 @@ function ImportPdfPageInner() {
 
   const [paperFile, setPaperFile] = useState<File | null>(null);
   const [keyFile, setKeyFile] = useState<File | null>(null);
-  const [batchRange, setBatchRange] = useState<string>("1-30");
+
+  const [selectedPreset, setSelectedPreset] = useState<string>("gate");
+  const [startQ, setStartQ] = useState<number>(1);
+  const [endQ, setEndQ] = useState<number>(30);
 
   const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState<{message?: string, error?: string} | null>(null);
+  const [currentProgress, setCurrentProgress] = useState<string>("");
+  const [lastPaperId, setLastPaperId] = useState<number | null>(null);
+  const [totalExtracted, setTotalExtracted] = useState<number>(0);
 
-  const handleUpload = async () => {
+  const [result, setResult] = useState<{ message?: string; error?: string } | null>(null);
+
+  const applyRange = (start: number, end: number) => {
+    setStartQ(start);
+    setEndQ(end);
+  };
+
+  const handleUploadSingleBatch = async (customStart?: number, customEnd?: number) => {
     if (!paperFile) return;
 
-    if (paperFile.size > 15 * 1024 * 1024 || (keyFile && keyFile.size > 15 * 1024 * 1024)) {
-      setResult({ error: "One of the files is too large! Please upload PDFs smaller than 15MB." });
-      return;
-    }
+    const sQ = customStart ?? startQ;
+    const eQ = customEnd ?? endQ;
 
     setIsProcessing(true);
     setResult(null);
+    setCurrentProgress(`Extracting Q${sQ} to Q${eQ}...`);
 
     try {
       const formData = new FormData();
       formData.append("paperFile", paperFile);
       if (keyFile) formData.append("keyFile", keyFile);
-      formData.append("topic_id", "1"); // Dummy topic for MVP
+      formData.append("topic_id", "1");
       if (exam_id) formData.append("exam_id", exam_id);
-      formData.append("batch_range", batchRange);
+      formData.append("start_q", sQ.toString());
+      formData.append("end_q", eQ.toString());
+      if (lastPaperId) formData.append("source_paper_id", lastPaperId.toString());
 
       const res = await fetch("/api/import-pdf", {
         method: "POST",
         body: formData
       });
-      
+
       const text = await res.text();
       let data: any = {};
       try {
@@ -48,16 +102,28 @@ function ImportPdfPageInner() {
       } catch (e) {
         throw new Error(text.length > 200 ? `Server returned an error (${res.status} ${res.statusText})` : text);
       }
-      
+
       if (!res.ok) throw new Error(data.error || `Upload failed with status ${res.status}`);
-      
-      setResult({ message: data.message });
-      setPaperFile(null);
-      setKeyFile(null);
+
+      if (data.source_paper_id) setLastPaperId(data.source_paper_id);
+      const count = data.extracted_count || 0;
+      setTotalExtracted((prev) => prev + count);
+
+      setResult({
+        message: `Success! Extracted ${count} questions (Q${sQ}–Q${eQ}). Total extracted for this paper: ${totalExtracted + count}.`
+      });
+
+      // Automatically advance range to next batch
+      const nextStart = eQ + 1;
+      const nextEnd = nextStart + 29;
+      setStartQ(nextStart);
+      setEndQ(nextEnd);
+
     } catch (err: any) {
       setResult({ error: err.message });
     } finally {
       setIsProcessing(false);
+      setCurrentProgress("");
     }
   };
 
@@ -69,9 +135,9 @@ function ImportPdfPageInner() {
         </Link>
         <div>
           <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Sparkles className="text-purple-600" /> Advanced AI PDF Extraction
+            <Sparkles className="text-purple-600" /> Universal AI Exam PDF Extraction
           </h2>
-          <p className="text-gray-500">Upload an official Question Paper and its Answer Key. Gemini AI will merge and parse them!</p>
+          <p className="text-gray-500">Fast, timeout-free question ingestion for NEET, GATE, JEE, UPSC, and SSC.</p>
         </div>
       </div>
 
@@ -131,54 +197,130 @@ function ImportPdfPageInner() {
           </div>
         </div>
 
-        {/* Batch Range Selection */}
-        <div className="bg-[#111624] p-6 rounded-xl border border-white/10 text-white">
-          <label className="block text-sm font-semibold text-gray-200 mb-2">Extraction Batch Size / Range</label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {[
-              { id: '1-30', label: 'Q1 to Q30 (~15s)' },
-              { id: '31-65', label: 'Q31 to Q65 (~15s)' },
-              { id: '1-65', label: 'Full Paper (Q1-Q65)' },
-              { id: 'all', label: 'All Questions (Up to 200)' }
-            ].map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setBatchRange(option.id)}
-                className={`py-2.5 px-3 rounded-lg text-xs font-bold transition-all border ${
-                  batchRange === option.id 
-                    ? 'bg-purple-600 border-purple-400 text-white shadow-lg' 
-                    : 'bg-white/5 border-white/10 text-gray-400 hover:border-white/20'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
+        {/* Universal Exam Presets & Batch Range Controller */}
+        <div className="bg-[#111624] p-6 rounded-2xl border border-white/10 text-white space-y-5">
+          <div className="flex justify-between items-center">
+            <h4 className="text-sm font-bold text-purple-400 uppercase tracking-wider">Exam Pipeline Configuration</h4>
+            {totalExtracted > 0 && (
+              <span className="px-3 py-1 bg-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-full border border-emerald-500/30">
+                {totalExtracted} Questions Fused into Paper #{lastPaperId}
+              </span>
+            )}
           </div>
-          <p className="text-xs text-gray-400 mt-2">
-            Tip: Choosing <strong>Q1 to Q30</strong> processes in ~15 seconds without hitting Vercel's Serverless timeout limits.
-          </p>
+
+          {/* Exam Type Preset Selector */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-400 mb-2">Select Exam Format</label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {Object.entries(EXAM_PRESETS).map(([key, preset]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPreset(key);
+                    if (preset.defaultRanges.length > 0) {
+                      setStartQ(preset.defaultRanges[0].start);
+                      setEndQ(preset.defaultRanges[0].end);
+                    }
+                  }}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border ${
+                    selectedPreset === key 
+                      ? 'bg-purple-600 border-purple-400 text-white shadow-md' 
+                      : 'bg-white/5 border-white/10 text-gray-400 hover:border-white/20'
+                  }`}
+                >
+                  {preset.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Quick-Pick Section Buttons for Selected Exam */}
+          {EXAM_PRESETS[selectedPreset]?.defaultRanges.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-400 mb-2">Preset Question Sections (1 Click)</label>
+              <div className="flex flex-wrap gap-2">
+                {EXAM_PRESETS[selectedPreset].defaultRanges.map((range, idx) => {
+                  const isActive = startQ === range.start && endQ === range.end;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => applyRange(range.start, range.end)}
+                      className={`py-2 px-3 rounded-lg text-xs font-medium transition-all border ${
+                        isActive
+                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/50'
+                          : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                      }`}
+                    >
+                      {range.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Custom Range Inputs (Valid for ANY exam from 1 to 300) */}
+          <div className="pt-2 border-t border-white/10">
+            <label className="block text-xs font-semibold text-gray-400 mb-2">Active Question Range to Process</label>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 font-mono">From Q</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="300"
+                  value={startQ}
+                  onChange={(e) => setStartQ(parseInt(e.target.value) || 1)}
+                  className="w-20 bg-[#0B0F19] border border-white/20 rounded-lg px-3 py-1.5 text-sm text-white font-mono text-center focus:outline-none focus:border-purple-500"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 font-mono">To Q</span>
+                <input
+                  type="number"
+                  min={startQ}
+                  max="300"
+                  value={endQ}
+                  onChange={(e) => setEndQ(parseInt(e.target.value) || startQ)}
+                  className="w-20 bg-[#0B0F19] border border-white/20 rounded-lg px-3 py-1.5 text-sm text-white font-mono text-center focus:outline-none focus:border-purple-500"
+                />
+              </div>
+              <span className="text-xs text-gray-400 ml-2">
+                ({endQ - startQ + 1} questions · ~15s execution)
+              </span>
+            </div>
+          </div>
         </div>
 
         <div className="bg-purple-50/50 p-6 rounded-xl border border-purple-100">
-          <h4 className="flex items-center gap-2 font-bold text-purple-900 mb-3">
-            <Sparkles size={20} className="text-purple-600" /> Gemini Multimodal Fusion
+          <h4 className="flex items-center gap-2 font-bold text-purple-900 mb-2">
+            <Sparkles size={20} className="text-purple-600" /> Universal Continuous Ingestion Pipeline
           </h4>
           <p className="text-sm text-purple-800/80 leading-relaxed">
-            By uploading both PDFs together, the AI will read the questions from the first document, find the corresponding question numbers in the second document, and automatically map the correct answers into the database. All mathematical equations will be preserved as LaTeX.
+            For exams with 150+ to 200 questions (like <strong>NEET</strong> or <strong>UPSC</strong>), each 30-question chunk completes in ~15 seconds without hitting serverless timeout limits. All chunks automatically append into the same master Question Paper in the Review Queue.
           </p>
         </div>
 
-        <div className="flex justify-end pt-4">
+        <div className="flex justify-between items-center pt-4">
+          <div className="text-sm text-gray-500">
+            {isProcessing && (
+              <span className="flex items-center gap-2 text-purple-600 font-medium animate-pulse">
+                <Loader2 size={18} className="animate-spin" /> {currentProgress || "AI is processing batch..."}
+              </span>
+            )}
+          </div>
+
           <button 
             disabled={!paperFile || isProcessing}
-            onClick={handleUpload}
+            onClick={() => handleUploadSingleBatch()}
             className={`px-8 py-3 rounded-xl font-bold flex items-center gap-2 transition-all
               ${(paperFile && !isProcessing)
                 ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-md' 
                 : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
           >
-            {isProcessing ? "AI is fusing PDFs..." : "Start AI Extraction"}
+            {isProcessing ? "Extracting..." : `Extract Q${startQ} to Q${endQ}`}
           </button>
         </div>
       </div>

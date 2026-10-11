@@ -8,14 +8,12 @@ export const maxDuration = 60; // Next.js serverless function max duration
 // Helper to clean and parse JSON from AI response
 function extractJsonArray(rawText: string): any[] {
   let cleaned = rawText.trim();
-  // Strip markdown code fences if present
   if (cleaned.startsWith("```json")) {
     cleaned = cleaned.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
   } else if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
   }
   
-  // Find array bounds
   const startIdx = cleaned.indexOf('[');
   const endIdx = cleaned.lastIndexOf(']');
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
@@ -33,7 +31,11 @@ export async function POST(request: NextRequest) {
     const keyFile = formData.get("keyFile") as File | null;
     const topic_id = formData.get("topic_id") as string || "1";
     const exam_id = formData.get("exam_id") as string || null;
-    const batch_range = formData.get("batch_range") as string || "1-30";
+    
+    // Universal range params
+    const startQ = parseInt(formData.get("start_q") as string) || 1;
+    const endQ = parseInt(formData.get("end_q") as string) || (startQ + 29);
+    const existingPaperId = formData.get("source_paper_id") ? parseInt(formData.get("source_paper_id") as string) : null;
     
     if (!paperFile) {
       return NextResponse.json({ error: "No Question Paper PDF provided." }, { status: 400 });
@@ -62,19 +64,20 @@ export async function POST(request: NextRequest) {
     const topicsList = topicsData?.map((t: any) => `ID ${t.id}: ${t.subject?.name} - ${t.name}`).join("\n") || "1: General";
 
     const ai = new GoogleGenAI({ apiKey });
-
     const client = await db.pool.connect();
     
-    // 1. Create a Source Paper record
-    const insertPaperQuery = `
-      INSERT INTO source_papers (paper_title, question_paper_file_path, status, exam_id)
-      VALUES ($1, $2, 'PROCESSING', $3)
-      RETURNING id
-    `;
-    const paperRes = await client.query(insertPaperQuery, [paperFile.name || 'Uploaded PDF', 'uploaded_file.pdf', exam_id ? parseInt(exam_id) : null]);
-    const sourcePaperId = paperRes.rows[0].id;
+    let sourcePaperId = existingPaperId;
+    if (!sourcePaperId) {
+      const insertPaperQuery = `
+        INSERT INTO source_papers (paper_title, question_paper_file_path, status, exam_id)
+        VALUES ($1, $2, 'PROCESSING', $3)
+        RETURNING id
+      `;
+      const paperRes = await client.query(insertPaperQuery, [paperFile.name || 'Uploaded PDF', 'uploaded_file.pdf', exam_id ? parseInt(exam_id) : null]);
+      sourcePaperId = paperRes.rows[0].id;
+    }
     
-    // 2. Create an Import Job
+    // Create an Import Job record for this chunk
     const insertJobQuery = `
       INSERT INTO import_jobs (source_paper_id, status)
       VALUES ($1, 'PROCESSING')
@@ -87,55 +90,38 @@ export async function POST(request: NextRequest) {
     const crypto = require('crypto');
 
     try {
-      let rangeInstruction = "Extract ALL questions present in this paper.";
-      if (batch_range === "1-30") {
-        rangeInstruction = "Extract questions numbered from Q1 to Q30 (or the first 30 questions).";
-      } else if (batch_range === "31-65") {
-        rangeInstruction = "Extract questions numbered from Q31 to Q65.";
-      } else if (batch_range === "1-65") {
-        rangeInstruction = "Extract questions numbered from Q1 to Q65.";
-      }
-
-      let prompt = `
-You are an expert competitive exam question digitization engine.
+      const prompt = `
+You are an expert competitive exam question digitization engine (supporting NEET, JEE, GATE, UPSC, SSC, etc.).
 Read the attached Question Paper PDF carefully.
 
-${rangeInstruction}
-`;
+CRITICAL TASK:
+Extract ONLY questions numbered from Question ${startQ} to Question ${endQ} (inclusive).
+Skip any questions with numbers outside this range.
+${keyBase64 ? "Match each question with the attached Answer Key PDF to determine 'correct_answer'." : ""}
 
-      if (keyBase64) {
-        prompt += `
-I have ALSO attached the official Answer Key PDF.
-CRITICAL: Match every question number in the question paper with its corresponding answer in the answer key to accurately set 'correct_answer'.
-`;
-      }
-
-      prompt += `
 Return a JSON array of objects with the following schema:
 [
   {
-    "question_number": "Q1",
+    "question_number": "Q${startQ}",
     "question_type": "MCQ" | "MSQ" | "NAT",
-    "question_text": "The full question text with mathematical formulas formatted in LaTeX like $x^2$ or $$\\frac{a}{b}$$",
-    "option_a": "Option A text (leave empty if NAT)",
-    "option_b": "Option B text (leave empty if NAT)",
-    "option_c": "Option C text (leave empty if NAT)",
-    "option_d": "Option D text (leave empty if NAT)",
-    "correct_answer": "A" or "B,C" for MSQ (leave empty if NAT)",
-    "nat_answer_min": null or minimum accepted numerical value if NAT,
-    "nat_answer_max": null or maximum accepted numerical value if NAT,
-    "positive_marks": 1 or 2,
-    "negative_marks": 0.33 or 0.66 (0 for NAT),
-    "detailed_solution": "Short 1-sentence solution explanation"
+    "question_text": "The full question text with formulas in LaTeX like $x^2$",
+    "option_a": "Option A text",
+    "option_b": "Option B text",
+    "option_c": "Option C text",
+    "option_d": "Option D text",
+    "correct_answer": "A" or "B" or "C" or "D",
+    "nat_answer_min": null,
+    "nat_answer_max": null,
+    "positive_marks": 4,
+    "negative_marks": 1,
+    "detailed_solution": "Brief 1-sentence solution explanation"
   }
 ]
 
 IMPORTANT RULES:
-1. Extract ALL questions from the document without skipping any.
-2. For NAT (Numerical Answer Type) questions: set question_type to 'NAT', leave options empty, and provide nat_answer_min and nat_answer_max numbers.
-3. For MSQ (Multiple Select Questions): set question_type to 'MSQ' and correct_answer like 'A,C'.
-4. For MCQ (Single Choice): set question_type to 'MCQ' and correct_answer to 'A', 'B', 'C', or 'D'.
-5. Respond ONLY with the valid JSON array. Do not include markdown preamble.
+1. Extract questions in order starting from ${startQ} up to ${endQ}.
+2. For medical/engineering exams like NEET/JEE: questions are usually MCQ with options (1)/(2)/(3)/(4) or (A)/(B)/(C)/(D). Map them into option_a, option_b, option_c, option_d.
+3. Respond ONLY with the valid JSON array. Do not include markdown preamble.
 `;
 
       const parts: any[] = [];
@@ -145,7 +131,6 @@ IMPORTANT RULES:
       }
       parts.push({ text: prompt });
 
-      // Use gemini-3.5-flash for speed, 1M context token support, and high accuracy
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
         contents: [{ role: "user", parts: parts }]
@@ -161,10 +146,6 @@ IMPORTANT RULES:
         throw new Error("AI did not return valid JSON. Please try uploading the PDF again.");
       }
 
-      if (questionsArray.length === 0) {
-        throw new Error("No questions were detected in the provided PDF.");
-      }
-
       await client.query("BEGIN");
 
       for (let idx = 0; idx < questionsArray.length; idx++) {
@@ -175,7 +156,6 @@ IMPORTANT RULES:
         // Hash for deduplication
         const hash = crypto.createHash('sha256').update(qText.toLowerCase().trim()).digest('hex');
         
-        // Check if question exists
         const checkQ = await client.query("SELECT id FROM questions WHERE content_hash = $1 LIMIT 1", [hash]);
         let newQId;
         
@@ -204,13 +184,12 @@ IMPORTANT RULES:
 
           newQId = qRes.rows[0].id;
 
-          // Insert options if MCQ or MSQ
           if (qType === 'MCQ' || qType === 'MSQ') {
             const correctStr = String(q.correct_answer || 'A').toUpperCase();
-            const isCorrectA = correctStr.includes('A');
-            const isCorrectB = correctStr.includes('B');
-            const isCorrectC = correctStr.includes('C');
-            const isCorrectD = correctStr.includes('D');
+            const isCorrectA = correctStr.includes('A') || correctStr.includes('1');
+            const isCorrectB = correctStr.includes('B') || correctStr.includes('2');
+            const isCorrectC = correctStr.includes('C') || correctStr.includes('3');
+            const isCorrectD = correctStr.includes('D') || correctStr.includes('4');
 
             const insertOptQuery = `
               INSERT INTO options (question_id, option_text, is_correct)
@@ -230,8 +209,7 @@ IMPORTANT RULES:
           }
         }
         
-        // Link to Source Paper
-        const qNumLabel = q.question_number || `Q${idx + 1}`;
+        const qNumLabel = q.question_number || `Q${startQ + idx}`;
         await client.query(`
           INSERT INTO paper_questions (source_paper_id, question_id, question_number, marks, negative_marks)
           VALUES ($1, $2, $3, $4, $5)
@@ -241,12 +219,19 @@ IMPORTANT RULES:
         successCount++;
       }
       
-      // Update jobs and papers
-      await client.query("UPDATE source_papers SET status = 'IMPORTED', total_questions = $1 WHERE id = $2", [successCount, sourcePaperId]);
+      // Update paper total questions count
+      const totalQRes = await client.query(
+        "SELECT COUNT(*) as cnt FROM paper_questions WHERE source_paper_id = $1",
+        [sourcePaperId]
+      );
+      const totalInPaper = parseInt(totalQRes.rows[0].cnt) || successCount;
+      
+      await client.query("UPDATE source_papers SET status = 'IMPORTED', total_questions = $1 WHERE id = $2", [totalInPaper, sourcePaperId]);
       await client.query("UPDATE import_jobs SET status = 'COMPLETED', total_questions_processed = $1, completed_at = now() WHERE id = $2", [successCount, jobId]);
       await client.query("COMMIT");
       
     } catch (err: any) {
+      await client.query("ROLLBACK");
       await client.query("UPDATE source_papers SET status = 'FAILED' WHERE id = $1", [sourcePaperId]);
       await client.query("UPDATE import_jobs SET status = 'FAILED', error_details = $1, completed_at = now() WHERE id = $2", [err.message, jobId]);
       throw err;
@@ -255,7 +240,10 @@ IMPORTANT RULES:
     }
 
     return NextResponse.json({ 
-      message: `Successfully fused ${successCount} questions and answers into the Review Queue!` 
+      success: true,
+      extracted_count: successCount,
+      source_paper_id: sourcePaperId,
+      message: `Extracted ${successCount} questions (Q${startQ}–Q${endQ}) into Review Queue!` 
     });
 
   } catch (error: any) {
