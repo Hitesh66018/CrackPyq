@@ -12,6 +12,7 @@ function ImportPdfPageInner() {
 
   const [paperFile, setPaperFile] = useState<File | null>(null);
   const [keyFile, setKeyFile] = useState<File | null>(null);
+  const [batchRange, setBatchRange] = useState<string>("1-30");
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState<{message?: string, error?: string} | null>(null);
@@ -33,6 +34,7 @@ function ImportPdfPageInner() {
       if (keyFile) formData.append("keyFile", keyFile);
       formData.append("topic_id", "1"); // Dummy topic for MVP
       if (exam_id) formData.append("exam_id", exam_id);
+      formData.append("batch_range", batchRange);
 
       const res = await fetch("/api/import-pdf", {
         method: "POST",
@@ -127,6 +129,35 @@ function ImportPdfPageInner() {
               </>
             )}
           </div>
+        </div>
+
+        {/* Batch Range Selection */}
+        <div className="bg-[#111624] p-6 rounded-xl border border-white/10 text-white">
+          <label className="block text-sm font-semibold text-gray-200 mb-2">Extraction Batch Size / Range</label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { id: '1-30', label: 'Q1 to Q30 (~15s)' },
+              { id: '31-65', label: 'Q31 to Q65 (~15s)' },
+              { id: '1-65', label: 'Full Paper (Q1-Q65)' },
+              { id: 'all', label: 'All Questions (Up to 200)' }
+            ].map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setBatchRange(option.id)}
+                className={`py-2.5 px-3 rounded-lg text-xs font-bold transition-all border ${
+                  batchRange === option.id 
+                    ? 'bg-purple-600 border-purple-400 text-white shadow-lg' 
+                    : 'bg-white/5 border-white/10 text-gray-400 hover:border-white/20'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            Tip: Choosing <strong>Q1 to Q30</strong> processes in ~15 seconds without hitting Vercel's Serverless timeout limits.
+          </p>
         </div>
 
         <div className="bg-purple-50/50 p-6 rounded-xl border border-purple-100">

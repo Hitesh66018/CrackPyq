@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
     const keyFile = formData.get("keyFile") as File | null;
     const topic_id = formData.get("topic_id") as string || "1";
     const exam_id = formData.get("exam_id") as string || null;
+    const batch_range = formData.get("batch_range") as string || "1-30";
     
     if (!paperFile) {
       return NextResponse.json({ error: "No Question Paper PDF provided." }, { status: 400 });
@@ -86,12 +87,20 @@ export async function POST(request: NextRequest) {
     const crypto = require('crypto');
 
     try {
-      // High-capacity prompt handling up to 200 questions in one seamless pass
+      let rangeInstruction = "Extract ALL questions present in this paper.";
+      if (batch_range === "1-30") {
+        rangeInstruction = "Extract questions numbered from Q1 to Q30 (or the first 30 questions).";
+      } else if (batch_range === "31-65") {
+        rangeInstruction = "Extract questions numbered from Q31 to Q65.";
+      } else if (batch_range === "1-65") {
+        rangeInstruction = "Extract questions numbered from Q1 to Q65.";
+      }
+
       let prompt = `
 You are an expert competitive exam question digitization engine.
 Read the attached Question Paper PDF carefully.
 
-Extract ALL questions present in this paper (supporting up to 200 questions: Q1, Q2, Q3, ... through the end of the document).
+${rangeInstruction}
 `;
 
       if (keyBase64) {
